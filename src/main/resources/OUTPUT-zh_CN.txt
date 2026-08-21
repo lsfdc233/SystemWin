@@ -1,0 +1,59 @@
+SystemWin 1.0.0 —— Windows 平台上的 systemctl/systemd 修复
+作者：lsfdc
+组织：852205105
+
+用法
+  systemwin [命令] [选项] [单元...]
+
+命令
+  install -n 名称 [-p 工作目录] -e 可执行文件 [-c 参数...]   将任意程序创建为服务：
+                             内置 SystemWin 服务宿主（systemwin.exe --host）
+                             以子进程方式托管程序
+  install --direct -n 名称 [-p 工作目录] -e 可执行文件 [-c 参数...]
+                              直接把程序本身注册为服务二进制
+                              （它必须是真正的 Windows 服务程序）
+  install -s 文件.service     导入 systemd 单元文件并创建服务
+  uninstall 单元              删除服务
+  start 单元...               启动服务
+  stop 单元...                停止服务
+  restart 单元...             重启服务
+  status [单元...]            查看服务状态（不带单元显示系统概要）
+  enable [--now] 单元...      启用服务的开机自启动
+  disable [--now] 单元...     禁用服务的开机自启动
+  is-active 单元...           输出 active/inactive，并设置退出码
+  is-enabled 单元...          输出 enabled/disabled，并设置退出码
+  list-units [--all]         列出服务（Windows 服务）
+  list-unit-files            列出服务及其启用状态
+  daemon-reload              兼容性空操作（单元实时读取，无需重载）
+  version                    打印版本信息
+  language                   显示可用语言列表
+  language <语言>             切换语言（en_US、zh_CN）
+  help                       显示本帮助
+
+选项
+  -n, --name 名称          服务名称
+  -p, --path 目录          程序的工作目录；若不指定，为可执行文件所在目录
+  -e, --executable 文件    要作为服务运行的程序；可以是绝对路径
+  -c, --command 参数...    传给程序的参数；取其后输入的全部内容
+  -s, --service-file 文件  要导入的 systemd .service 单元文件
+  -f, --force              配合 install：覆盖已存在的服务
+      --direct             配合 install：直接把程序本身注册为服务二进制
+                           （不使用服务宿主）
+      --no-elevate         不请求提升；直接报错退出
+      --now                立即启动/停止
+  -h, --help               显示本帮助
+  -V, --version            打印版本
+
+
+说明
+  * 服务操作（install/uninstall/start/stop/enable/disable）
+    需要以管理员身份运行（Administrator 控制台）。以非管理员身份运行时，
+    SystemWin 会自动通过 UAC 弹窗请求提升，并把提升后运行的输出回传到
+    当前控制台；可用 --no-elevate 关闭该行为。
+  * 默认 install 使用内置 SystemWin 服务宿主
+    任意程序都能以服务方式运行：应用工作目录与 Environment=，stdout/stderr
+    记录到 %ProgramData%\SystemWin\logs\<名称>.{out,err}.log，崩溃自动重启
+    （AppRestartDelay），停止时终止整个进程树；宿主生命周期事件记录在
+    <名称>.host.log。
+  * --direct 直接把程序本身注册给服务控制管理器；该程序必须是真正的
+    Windows 服务程序，否则启动后会被 SCM 终止。

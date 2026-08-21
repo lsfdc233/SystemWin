@@ -1,0 +1,284 @@
+// =============================================================================
+// build.gradle —— SystemWin 的 Gradle 构建脚本
+// =============================================================================
+// 这个文件是整个项目"后勤部门"的总控台：它告诉 Gradle 怎么把一个普通
+// 的 Java 项目编译、打包，并且最终变成一个"自包含"的 systemwin.exe 单文件
+// 可执行程序。
+//
+// 说白了，构建过程分为两大步：
+//   1. 用 Java 编译器把我们写的 com.systemwin 包源码编译成 systemwin.jar；
+//   2. 用一个特殊的 singleExe 任务，把下面这几样东西拼装成一个 exe：
+//        - 一个 C# 写的小启动器（负责解压和拉起 Java 运行时）；
+//        - 一个精简版 Java 运行时（jlink 生成，只保留 java.base 模块）；
+//        - systemwin.jar 本身；
+//     然后用"启动器 + 载荷 + 脚注"三段式拼接成最终的单文件 exe。
+//
+// 之所以要这么费劲，是因为我们要交付"一个 exe"给用户直接双击/命令行使用，
+// 而 Java 程序通常需要目标机器装上 JDK/JRE。这里把运行时直接塞进 exe 里，
+// 就免去了用户自己装 Java 的麻烦——这是"自包含可执行文件"的核心思路。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// plugins 段落：声明这个构建需要哪些 Gradle 插件
+// -----------------------------------------------------------------------------
+// 'java' 插件：让 Gradle 认识 Java 源码和 jar 打包，如果少了它，Gradle 根本
+//   不晓得 src/main/java 这个约定目录的存在，也就没法编译我们写的类。
+// 'application' 插件：额外提供"应用分发"能力（run 任务、生成启动脚本等），
+//   这里主要用于开发阶段能用 gradlew run 方便地跑起来，而不必每次手动打 jar。
+plugins {
+    id 'java'
+    id 'application'
+}
+
+// -----------------------------------------------------------------------------
+// 项目的坐标信息（GAV 坐标里的 G 和 V）
+// -----------------------------------------------------------------------------
+// group：一般对应一个组织或命名空间，用于避免不同项目的类互相冲突。
+// version：版本号，1.0.0 表示第一个正式发布版。
+// description：一句话描述这个项目是干嘛的，方便人（和工具）快速了解。
+group = 'com.systemwin'
+version = '1.0.0'
+description = 'SystemWin - a systemctl/systemd work-alike for Windows'
+
+// -----------------------------------------------------------------------------
+// repositories 段落：声明依赖从哪里下载
+// -----------------------------------------------------------------------------
+// 我们这个项目目前其实没有任何第三方依赖（纯 JDK 自带功能），但保留 mavenCentral
+// 作为标准中央仓库声明，万一以后要引库，直接加 dependency 就行。
+repositories {
+    mavenCentral()
+}
+
+// -----------------------------------------------------------------------------
+// java 段落：配置 Java 语言级别的兼容性
+// -----------------------------------------------------------------------------
+// sourceCompatibility / targetCompatibility：分别规定"源码使用的语法版本"和
+// "编译出的字节码目标版本"。都设成 17，意思是：你必须用 JDK 17+ 来编译，
+// 编译出来的 class 文件也能跑在 17 及以上的 JRE 上。注意实际编译用的是
+// 下面 compileJava 里的 options.release，这里主要是给 IDE 看的意思。
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+// -----------------------------------------------------------------------------
+// compileJava 段落：Java 编译器的细节参数
+// -----------------------------------------------------------------------------
+// options.encoding：因为我们的源代码里有大量中文注释（还有中文资源消息），
+//   必须明确告诉编译器源文件是用 UTF-8 编码的，否则它默认按平台编码（Windows 上
+//   可能是 GBK）解读，中文就会变成乱码甚至编译失败。这一步非常关键。
+// options.release：锁定目标 JRE 版本为 17，比 targetCompatibility 更严格也更
+//   安全——它会同时限制我们能用的 API，避免不小心用到只有 JDK 18+ 才有的方法。
+compileJava {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+// -----------------------------------------------------------------------------
+// jar 段落：配置最终打出的 jar 包
+// -----------------------------------------------------------------------------
+// archiveFileName：直接指定 jar 的文件名叫 systemwin.jar（默认会带版本号尾巴）。
+// manifest 里的 Main-Class：告诉 java -jar 命令该从哪个类进入程序，这里当然是
+//   我们的入口类 com.systemwin.Main。
+jar {
+    archiveFileName = 'systemwin.jar'
+    manifest {
+        attributes 'Main-Class': 'com.systemwin.Main'
+    }
+}
+
+// -----------------------------------------------------------------------------
+// application 段落：给开发阶段用的"直接跑"配置
+// -----------------------------------------------------------------------------
+// 配上 mainClass 之后，开发时执行 gradlew run 就能启动程序，不用先打 jar。
+// 注意：这只是方便调试，真正交付用的入口是单文件的 systemwin.exe，
+// 而不是这个 run 任务。
+application {
+    mainClass = 'com.systemwin.Main'
+}
+
+// -----------------------------------------------------------------------------
+// 禁用 application 插件默认生成的"发行版 tar/zip"
+// -----------------------------------------------------------------------------
+// application 插件默认会生成 distTar / distZip 这两个发行压缩包任务（里面是
+// 一堆源码目录式的结构：bin + lib）。但我们最终只想要"一个 exe"这种简洁交付物，
+// 这些传统发行包我们根本不用，所以直接关掉，免得浪费时间多打一份用不到的东西。
+tasks.named('distZip') { enabled = false }
+tasks.named('distTar') { enabled = false }
+
+// =============================================================================
+// singleExe 任务：拼装自包含的 systemwin.exe
+// =============================================================================
+// 这里是整个构建脚本的重头戏。整体思路（三段式拼接）：
+//
+//   最终 exe = [C# 启动器] + [zip 载荷] + [8 字节脚注]
+//
+//   1) C# 启动器：用 Windows 系统自带的 csc.exe 编译 src/launcher 下的两个
+//      .cs 文件得到 swlauncher.exe。它本身很小，作用只有一个：首次运行时把
+//      附在它后面的 zip 载荷解压到 %LOCALAPPDATA%\SystemWin\run，然后拉起
+//      载荷里的 java.exe -jar systemwin.jar，并原样透传所有参数和退出码。
+//
+//   2) zip 载荷：把 jlink 生成的精简 JRE（runtime/ 目录）和 systemwin.jar
+//      （app/ 目录）一起打成 payload.zip。jlink 是我们用 JDK 里的工具按需裁剪
+//      出来的"迷你 JVM"，只包含 java.base 一个模块，体积小很多。
+//
+//   3) 脚注：在 exe 末尾写上魔数 "SWX1" 和 8 字节的载荷长度。C# 启动器就是靠
+//      读这个脚注得知 zip 载荷从哪里开始、有多长，从而能把它抠出来。
+//
+// JDK 位置：默认用 C:\Program Files\Java\jdk-17，也可以通过环境变量 JDK_HOME
+//   覆盖（例如装了别的 JDK 目录时指过去即可）。
+// ============================================================================
+
+// jlink 是我们需要 JDK 的 jlink.exe 工具；这里先用 providers.environmentVariable
+// 试着读环境变量 JDK_HOME，若读到了就拼出 <JDK_HOME>/bin/jlink.exe；读不到就
+// 回退到默认的 jdk-17 安装路径。这是一种"灵活配置 + 合理默认值"的做法。
+def jlinkExe = providers.environmentVariable('JDK_HOME')
+        .map { h -> file("${h}/bin/jlink.exe") }
+        .orElse(file('C:/Program Files/Java/jdk-17/bin/jlink.exe'))
+
+// csc.exe 是微软随 .NET Framework 一起白送的命令行 C# 编译器，每个 Windows
+// 机器上基本都有（只要装了 .NET Framework 4.x），所以用它做启动器编译器，我们
+// 就不必额外安装 Visual Studio 之类的庞然大物了。
+def cscExe = file('C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe')
+
+// 真正注册"任务"：任务名叫 singleExe，属于 distribution 分组。它依赖 jar 任务
+// （先把 Java 编译打包好），然后才能取到 systemwin.jar 去做后续拼装。
+tasks.register('singleExe') {
+    group = 'distribution'
+    description = 'Build the single self-contained systemwin.exe.'
+    // 必须先有 jar，这一步是不容置疑的前置条件。
+    dependsOn tasks.named('jar')
+
+    // doLast 表示"任务执行到最后阶段做什么"，里面放我们真正的拼装步骤。
+    doLast {
+        // 先把前面算好的 jlink 路径和 csc 路径真正"取到手"。这里 .get() 是
+        // 因为 providers 返回的是一个"可能还没被解析的懒值"，取一下就得到
+        // 真实的 File 对象了。
+        def jl = jlinkExe.get()
+        def csc = cscExe
+
+        // 两个工具是硬前提：缺了任何一个整个 exe 都造不出来，所以直接抛异常
+        // 终止构建，并给出清晰的中文友好提示（这段是英文，但意思明确）。
+        if (!jl.exists()) {
+            throw new GradleException(
+                    "jlink not found at ${jl}. Install a JDK (16+) and set JDK_HOME to its home directory.")
+        }
+        if (!csc.exists()) {
+            throw new GradleException(
+                    "csc.exe not found at ${csc} (needed to compile the launcher).")
+        }
+
+        // 定义输出目录。outDir 是最终放 systemwin.exe 的目录；stage 是临时
+        // 中转目录（先在里面搭好 runtime/ 和 app/，再一起压缩）。
+        def outDir = layout.buildDirectory.dir('singleexe').get().asFile
+        def stage = layout.buildDirectory.dir('singleexe/stage').get().asFile
+
+        // 清理旧产物。注意这里用"清空子项"而不是"直接 delete 整个目录"，
+        // 因为用户的命令行可能正停在该目录里（比如 cd 到了 build/singleexe），
+        // 此时整个目录被占用无法删除，删除就会报错；只清里面的内容则不受影响。
+        def cleanChildren = { File d ->
+            if (!d.exists()) {
+                return
+            }
+            d.listFiles()?.each { f ->
+                if (f.isDirectory()) {
+                    f.deleteDir()
+                } else {
+                    f.delete()
+                }
+            }
+        }
+        cleanChildren(stage)
+        cleanChildren(outDir)
+        // 清完后确保目录存在，后续才好往里面写东西。
+        stage.mkdirs()
+        outDir.mkdirs()
+
+        // -------------------------------------------------------------------
+        // 第 1 步：用 jlink 生成精简 JRE（只保留 java.base）
+        // -------------------------------------------------------------------
+        // jlink 是 JDK 自带的"定制运行时"工具：给定模块路径（%JDK%\jmods），
+        // 我们只管要一个 java.base 模块，它就裁剪出只够跑一个最基础 Java 程序
+        // 的迷你运行时。--strip-debug 去掉调试信息减小体积，--no-header-files
+        // 和 --no-man-pages 不要头文件和手册，--compress=2 压缩字节码进一步瘦身。
+        def jdkHome = jl.parentFile.parentFile
+        def runtime = new File(stage, 'runtime')
+        exec {
+            executable jl.absolutePath
+            args '--module-path', new File(jdkHome, 'jmods').absolutePath,
+                    '--add-modules', 'java.base',
+                    '--output', runtime.absolutePath,
+                    '--strip-debug', '--no-header-files', '--no-man-pages', '--compress=2'
+        }
+
+        // -------------------------------------------------------------------
+        // 第 2 步：把编译好的 systemwin.jar 放进载荷的 app/ 目录
+        // -------------------------------------------------------------------
+        // 这样最终执行时就是 runtime/bin/java.exe -jar app/systemwin.jar
+        // （实际由 C# 启动器来拼这个启动命令）。
+        def app = new File(stage, 'app')
+        app.mkdirs()
+        copy {
+            from layout.buildDirectory.dir('libs')
+            include 'systemwin.jar'
+            into app
+        }
+
+        // -------------------------------------------------------------------
+        // 第 3 步：用 csc 编译 C# 启动器（含服务宿主）成 swlauncher.exe
+        // -------------------------------------------------------------------
+        // 传入两个 .cs 源文件：SystemWinLauncher.cs（负责解压+拉起）和
+        // ServiceHost.cs（负责"把任意程序当服务跑"的宿主逻辑，--host 模式）。
+        // 同时用 /r: 引用 .NET 里解压 zip 所需的程序集（System.IO.Compression）。
+        def launcherExe = new File(outDir, 'swlauncher.exe')
+        exec {
+            executable csc.absolutePath
+            args '/nologo', '/optimize+', '/target:exe',
+                    "/out:${launcherExe.absolutePath}",
+                    '/r:System.IO.Compression.dll',
+                    '/r:System.IO.Compression.FileSystem.dll',
+                    '/r:System.dll',
+                    file('src/launcher/SystemWinLauncher.cs').absolutePath,
+                    file('src/launcher/ServiceHost.cs').absolutePath
+        }
+
+        // -------------------------------------------------------------------
+        // 第 4 步：把 runtime/ 和 app/ 一起打成载荷 zip
+        // -------------------------------------------------------------------
+        // 用 Gradle 内置的 ant.zip 万能压缩法，把 stage 目录整体压缩成
+        // payload.zip，作为后续拼进 exe 中间的那段"载荷"。
+        def payloadZip = new File(outDir, 'payload.zip')
+        ant.zip(destfile: payloadZip) { fileset(dir: stage) }
+
+        // -------------------------------------------------------------------
+        // 第 5 步：拼装 启动器 + 载荷 + 脚注
+        // -------------------------------------------------------------------
+        // 把 swlauncher.exe 的字节、payload.zip 的字节、以及一个 12 字节的脚注
+        // （"SWX1" 4 字节魔数 + 载荷长度 8 字节）顺序接起来，就得到最终 exe。
+        // C# 启动器运行时读文件结尾，靠魔数确认"这还是 systemwin"，靠长度
+        // 找准 zip 载荷的起止位置，从而能把它截取出来解压。
+        def finalExe = new File(outDir, 'systemwin.exe')
+        def payloadBytes = payloadZip.bytes
+        def footer = new ByteArrayOutputStream()
+        // 魔数：任意挑的四个字符，用来标识"这个 exe 是 SystemWin 自包含包"。
+        footer.write('SWX1'.getBytes('US-ASCII'))
+        long v = payloadBytes.length
+        // 把长度按小端序（低字节在前）拆成 8 个字节写进脚注。
+        byte[] lenBytes = new byte[8]
+        for (int i = 0; i < 8; i++) {
+            lenBytes[i] = (byte) ((v >>> (8 * i)) & 0xFF)
+        }
+        footer.write(lenBytes)
+        // 依次写入：启动器 -> 载荷 -> 脚注。
+        finalExe.withOutputStream { os ->
+            os.write(launcherExe.bytes)
+            os.write(payloadBytes)
+            os.write(footer.toByteArray())
+        }
+        // 拼装完成后，临时文件和中间文件就没用了，删掉保持目录整洁。
+        delete(payloadZip, launcherExe, stage)
+
+        // 打一条成功日志，主动告诉用户 exe 生成在哪里、有多大。
+        println "Single exe: ${finalExe.absolutePath} (${finalExe.length()} bytes)"
+    }
+}

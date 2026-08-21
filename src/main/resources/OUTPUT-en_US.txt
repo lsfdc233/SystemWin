@@ -1,0 +1,84 @@
+SystemWin 1.0.0 - a systemctl/systemd work-alike for Windows
+Author: SystemWin Team
+
+USAGE
+  systemwin [COMMAND] [OPTIONS] [UNIT...]
+
+COMMANDS
+  install -n NAME [-p WORKDIR] -e EXECUTABLE [-c ARGS...]   Create a service from ANY
+                              program: the built-in SystemWin service host
+                              (systemwin.exe --host) spawns the program as a
+                              child with the working directory, environment
+                              and stdout/stderr logs; restarts it on crash and
+                              kills the process tree on stop
+  install --direct -n NAME [-p WORKDIR] -e EXECUTABLE [-c ARGS...]
+                              Register the program itself as the service binary
+                              (it must be a real Windows service program)
+  install -s FILE.service     Import a systemd unit file as a service
+  uninstall UNIT              Remove (delete) a service
+  start UNIT...               Start service(s)
+  stop UNIT...                Stop service(s)
+  restart UNIT...             Restart service(s)
+  status [UNIT...]            Show service status (no UNIT: system summary)
+  enable [--now] UNIT...      Enable auto-start for service(s) (start on boot)
+  disable [--now] UNIT...     Disable auto-start for service(s)
+  is-active UNIT...           Print active/inactive, set exit status
+  is-enabled UNIT...          Print enabled/disabled, set exit status
+  list-units [--all]          List services (Windows services)
+  list-unit-files             List services with enable state
+  daemon-reload               Compatibility no-op (units are read live)
+  version                     Print version information
+  language                    List available languages
+  language <LANG>             Switch language (en_US, zh_CN)
+  help                        Show this help
+
+OPTIONS
+  -n, --name NAME         Service name (with install)
+  -p, --path DIR          Working directory for the program (with install);
+                          optional, defaults to the executable's folder
+  -e, --executable FILE   The program to run as a service; absolute
+                          (D:\Java.exe) or relative (java.exe, .\java.exe;
+                          resolved against the working directory and PATH)
+  -c, --command ARGS...   Arguments for the program; takes everything typed
+                          after it (e.g. -jar app.jar, --port 8080)
+  -s, --service-file F    systemd .service unit file to import
+  -f, --force             With install: replace an existing service
+      --direct            With install: register the program itself as the
+                          service binary instead of using the service host
+      --no-elevate        Never request elevation; fail with an error instead
+      --now               With enable/disable: also start/stop immediately
+      --all               With list-units: (accepted; all services are shown)
+  -h, --help              Show this help
+  -V, --version           Print version
+
+EXAMPLES
+  systemwin install -n myweb -p D:\app -e node.exe -c app.js --port 8080
+  systemwin install -n myjar -p D:\app -e java.exe -c -jar app.jar
+  systemwin install -s C:\units\nginx.service
+  systemwin enable --now myweb
+  systemwin start myweb
+  systemwin status myweb
+  systemwin list-units
+  systemwin language zh_CN
+
+NOTES
+  * Unit names may be written with or without the .service suffix.
+  * Service operations (install/uninstall/start/stop/enable/disable)
+    require an elevated (Administrator) console. When run without
+    Administrator rights, SystemWin automatically requests elevation via a
+    UAC prompt and relays the elevated run's output back to this console;
+    pass --no-elevate to suppress this behavior.
+  * Default install uses the built-in SystemWin service host (service logic
+    modeled on nssm), so any program can run as a service: working directory
+    and Environment= are applied, stdout/stderr are logged to
+    %ProgramData%\SystemWin\logs\<name>.{out,err}.log, crashes restart the
+    program (AppRestartDelay), and stop terminates the whole process tree.
+    Lifecycle events are logged to <name>.host.log.
+  * --direct registers the program itself with the Service Control Manager;
+    the program must then be a real Windows service program, otherwise the
+    SCM terminates it shortly after start.
+  * The language is detected from the Windows UI language; use
+    'systemwin language <LANG>' to override. The choice is stored in
+    %APPDATA%\SystemWin\config.properties.
+  * This help text is compiled into the distribution from
+    OUTPUT-en_US.txt / OUTPUT-zh_CN.txt.
